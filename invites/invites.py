@@ -119,10 +119,16 @@ class ModmailInvitePlugin(commands.Cog):
     # Invite Creation Logic
     async def create_thread_invite(self, thread, config=None):
         """Create Discord invite with configurable parameters"""
+        # Use thread.channel.guild if thread.guild is missing
+        guild = getattr(thread, "guild", None)
+        if guild is None and hasattr(thread, "channel"):
+            guild = getattr(thread.channel, "guild", None)
+        if not guild:
+            logger.error(f"Cannot resolve guild for thread {getattr(thread, 'id', None)}")
+            return None
+
         if not config:
-            config = await self.get_config(thread.guild.id)
-        
-        guild = thread.guild
+            config = await self.get_config(guild.id)
         
         # Check permissions
         valid, error = await self.validate_permissions(guild)
@@ -146,12 +152,12 @@ class ModmailInvitePlugin(commands.Cog):
                 max_uses=config["invite_uses"],
                 temporary=config.get("temporary", False),
                 unique=True,
-                reason=f"Modmail invite for thread {thread.id}"
+                reason=f"Modmail invite for thread {getattr(thread, 'id', 'unknown')}"
             )
             
             # Cache successful invite
             self.cache_invite(guild.id, invite.url, config["invite_duration"])
-            logger.info(f"Created invite for thread {thread.id} in guild {guild.id}")
+            logger.info(f"Created invite for thread {getattr(thread, 'id', 'unknown')} in guild {guild.id}")
             return invite.url
             
         except discord.HTTPException as e:
@@ -213,11 +219,18 @@ class ModmailInvitePlugin(commands.Cog):
     
     # Event Handlers
     @commands.Cog.listener()
-    async def on_thread_ready(self, thread, creator, category, initial_message):
+    async def on_thread_ready(self, thread, *args, **kwargs):
         """Create invite variable when modmail thread is ready"""
         try:
-            config = await self.get_config(thread.guild.id)
-            
+            # Try to access guild from thread.channel if thread.guild fails
+            guild = getattr(thread, "guild", None)
+            if guild is None and hasattr(thread, "channel"):
+                guild = getattr(thread.channel, "guild", None)
+            if guild is None:
+                logger.error("Error in on_thread_ready: Cannot resolve guild for thread!")
+                return
+
+            config = await self.get_config(guild.id)
             if config.get("auto_create", True):
                 invite_url = await self.create_thread_invite(thread, config)
                 if invite_url:
@@ -229,27 +242,27 @@ class ModmailInvitePlugin(commands.Cog):
                     
                     # Store persistently
                     await self.db.update_one(
-                        {"_id": f"thread_{thread.id}"},
+                        {"_id": f"thread_{getattr(thread, 'id', None)}"},
                         {
                             "$set": {
                                 "invite_url": invite_url,
                                 "created_at": datetime.utcnow(),
-                                "guild_id": thread.guild.id,
-                                "thread_id": thread.id
+                                "guild_id": guild.id,
+                                "thread_id": getattr(thread, 'id', None)
                             }
                         },
                         upsert=True
                     )
-                    logger.debug(f"Stored invite variable for thread {thread.id}")
+                    logger.debug(f"Stored invite variable for thread {getattr(thread, 'id', None)}")
         except Exception as e:
             logger.error(f"Error in on_thread_ready: {e}")
     
     @commands.Cog.listener()
-    async def on_thread_close(self, thread, closer, silent, delete_channel):
+    async def on_thread_close(self, thread, *args, **kwargs):
         """Clean up thread data when thread closes"""
         try:
-            await self.db.delete_one({"_id": f"thread_{thread.id}"})
-            logger.debug(f"Cleaned up data for closed thread {thread.id}")
+            await self.db.delete_one({"_id": f"thread_{getattr(thread, 'id', None)}"})
+            logger.debug(f"Cleaned up data for closed thread {getattr(thread, 'id', None)}")
         except Exception as e:
             logger.error(f"Error cleaning up thread data: {e}")
     
